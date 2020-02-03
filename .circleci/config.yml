@@ -1,0 +1,110 @@
+
+# Check https://circleci.com/docs/2.0/language-ruby/ for more details
+version: 2.1
+executors:
+  build_deploy:
+    docker:
+      - image: 167290662341.dkr.ecr.us-west-2.amazonaws.com/build-deploy
+        aws_auth:
+          aws_access_key_id: $PROD_AWS_ACCESS_KEY
+          aws_secret_access_key: $PROD_AWS_SECRET_KEY
+        environment:
+          IMAGE: 167290662341.dkr.ecr.us-west-2.amazonaws.com/secrets-manager
+          DEPLOYMENT: secrets-manager
+          APP: secrets-manager
+jobs:
+  build_and_push_image:
+    executor: build_deploy
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - run:
+          name: Build and Push Image
+          command: |
+            lime-build "$IMAGE"
+  deploy_staging:
+    executor: build_deploy
+    steps:
+      - checkout
+      - run:
+          name: Deploy Staging
+          command: |
+            lime-deploy staging "$DEPLOYMENT" "$APP" "$IMAGE"
+  deploy_production:
+    executor: build_deploy
+    steps:
+      - checkout
+      - run:
+          name: Deploy Production
+          command: |
+            lime-deploy production "$DEPLOYMENT" "$APP" "$IMAGE"
+  lint:
+    executor: build_deploy
+    steps:
+      - checkout
+      - run:
+          name: Run Linter
+          command: |
+            # exclude kubeconfig because these files can be messy
+            flake8 ./app
+  test:
+    executor: build_deploy
+    steps:
+      - checkout
+      - run:
+          name: Run Tests
+          command: |
+            pipenv install
+            pipenv run python -m unittest discover
+  coverage:
+    executor: build_deploy
+    steps:
+      - checkout
+      - run:
+          name: Run Coverage
+          command: |
+            pipenv install --dev
+            pipenv run python -m coverage run -m unittest discover
+            pipenv run python -m coverage report
+workflows:
+  on_commit:
+    jobs:
+      - test
+      - lint
+      - coverage
+      - build_and_push_image:
+          context: prod
+          filters:
+            branches:
+              only:
+                - master
+                - deploy/production
+      - deploy_staging:
+          context: prod
+          filters:
+            branches:
+              only:
+                - master
+          requires:
+            - build_and_push_image
+            - test
+            - lint
+      - production_approval:
+          context: prod
+          type: approval
+          filters:
+            branches:
+              only:
+                - master
+          requires:
+            - deploy_staging
+      - deploy_production:
+          context: prod
+          requires:
+            - production_approval
+          filters:
+            branches:
+              only:
+                - master
+
